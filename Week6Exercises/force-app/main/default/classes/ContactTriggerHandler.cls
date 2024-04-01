@@ -1,33 +1,29 @@
-public with sharing class ContactTriggerHandler {
-    public static void handleAfterUpdate(Set<Id> contactIds) {
-        // Check CRUD permission for the Contact object
-        if (!Schema.sObjectType.Contact.isUpdateable() || !Schema.sObjectType.Contact.isAccessible()) {
-            // Handle insufficient permissions
-            throw new InsufficientPermissionsException('Insufficient permissions to update Contact records.');
-        }
-        
-        // Perform SOQL query to retrieve Contact records
-        List<Contact> updatedContacts = [SELECT Id, AccountId, Phone, IsPrimaryContact__c FROM Contact WHERE Id IN :contactIds];
+public class ContactTriggerHandler implements Queueable {
+    private List<Contact> primaryContacts;
 
-        // Check CRUD permission for the Account object
-        if (!Schema.sObjectType.Account.isUpdateable() || !Schema.sObjectType.Account.isAccessible()) {
-            // Handle insufficient permissions
-            throw new InsufficientPermissionsException('Insufficient permissions to update Account records.');
+    public ContactTriggerHandler(List<Contact> primaryContacts) {
+        this.primaryContacts = primaryContacts;
+    }
+
+    public void execute(QueueableContext context) {
+        // Maparea Id-urilor de conturi la numerele de telefon ale contactelor primare
+        Map<Id, String> accountToPhoneMap = new Map<Id, String>();
+        for (Contact con : primaryContacts) {
+            accountToPhoneMap.put(con.AccountId, con.Phone);
         }
 
-        // Perform DML operation to update Account records
-        List<Account> accountsToUpdate = new List<Account>();
-        for (Contact updatedContact : updatedContacts) {
-            // Update Account records based on Contact changes
-            // Example logic...
-            Account acc = new Account(Id = updatedContact.AccountId, Phone = updatedContact.Phone);
-            accountsToUpdate.add(acc);
+        // Obținerea tuturor contactelor care sunt legate de aceleași conturi ca și contactele primare
+        List<Contact> contactsToUpdate = [SELECT Id, AccountId, Phone FROM Contact
+                                           WHERE AccountId IN :accountToPhoneMap.keySet()
+                                           AND Id NOT IN :primaryContacts];
+
+        // Actualizarea numărului de telefon
+        for (Contact con : contactsToUpdate) {
+            con.Phone = accountToPhoneMap.get(con.AccountId);
         }
 
-        try {
-            update accountsToUpdate;
-        } catch (Exception e) {
-            // Handle DML errors if necessary
-        }
+        // Actualizare asincronă cu allOrNothing setat la false
+        // pentru a preveni inversarea tuturor actualizărilor în cazul în care una dintre ele eșuează
+        Database.update(contactsToUpdate, false);
     }
 }
